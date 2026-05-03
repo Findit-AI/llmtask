@@ -1,0 +1,22 @@
+[package]
+name         = "vlm-tasks"
+version      = "0.1.0"
+edition      = "2024"
+rust-version = "1.95"
+description  = "Shared types for findit-studio VLM engines: Task trait, ParseError, SceneAnalysis"
+license      = "MIT OR Apache-2.0"
+
+[dependencies]
+serde      = { version = "1", features = ["derive"], optional = true }
+serde_json = "1"
+smol_str   = "0.3"
+thiserror  = "2"
+
+[features]
+default = []
+serde   = ["dep:serde", "smol_str/serde"]
+
+[lints.rust]
+rust_2018_idioms     = "warn"
+single_use_lifetimes = "warn"
+unexpected_cfgs      = { level = "warn", check-cfg = ['cfg(docsrs)', 'cfg(tarpaulin)'] }
