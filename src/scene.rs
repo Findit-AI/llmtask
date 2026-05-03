@@ -5,8 +5,9 @@
 
 use smol_str::SmolStr;
 
-/// Structured scene-level VLM output. Construct via [`SceneTask::parse`]
-/// (the `Task::parse` impl) or, for tests/builders, [`SceneAnalysis::new`]
+/// Structured scene-level VLM output. Construct via an engine's
+/// `SceneTask::parse` (the `Task::parse` impl) or, for tests/builders,
+/// [`SceneAnalysis::new`]
 /// followed by `with_*` chains. All fields are private; the accessor
 /// surface follows the rest of the crate's `scenesdetect`-style getter /
 /// `with_*` / `set_*` convention.

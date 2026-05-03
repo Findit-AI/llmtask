@@ -9,6 +9,9 @@ use serde_json::Value;
 /// `Output`. The trait is `Send + Sync` and `Output: Send` so trait
 /// objects (`dyn Task<Output = ...>`) and concurrent call sites work
 /// without extra bounds at the call site.
+///
+/// Implementations should cache their schema (build it once in `new`)
+/// rather than rebuilding it per call — `schema` returns a borrow.
 pub trait Task: Send + Sync {
   /// The typed result of a successful run.
   type Output: Send;
@@ -30,7 +33,11 @@ pub enum ParseError {
   #[error("invalid JSON: {0}")]
   Json(#[from] serde_json::Error),
   /// JSON parsed but one or more required schema fields are absent or
-  /// present as JSON `null`.
+  /// present as JSON `null`. Both cases are treated as missing because
+  /// the schema requires every listed field to carry a string or array
+  /// value, never null. (Per-field deserializers silently coerce `null`
+  /// into defaults, which would otherwise hide constrained-decoder
+  /// drift; this check fails fast before deserialization runs.)
   #[error("schema violation: required fields missing or null: {0:?}")]
   MissingFields(Vec<&'static str>),
   /// JSON parsed and had no missing fields, but every value was empty.
@@ -57,5 +64,7 @@ mod tests {
       fn parse(&self, _raw: &str) -> Result<(), ParseError> { Ok(()) }
     }
     let _: Box<dyn Task<Output = ()>> = Box::new(Dummy);
+    fn _assert_send_sync(_: &(impl Send + Sync + ?Sized)) {}
+    _assert_send_sync(&*Box::new(Dummy) as &dyn Task<Output = ()>);
   }
 }
