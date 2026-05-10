@@ -1,29 +1,39 @@
-//! `SceneAnalysis` — the canonical scene-analysis output type, shared
-//! across `qwen` and `lfm` engines. Each engine's `SceneTask` constructs
-//! values of this type; downstream consumers can pass `&SceneAnalysis`
-//! references between engine outputs without conversion.
+//! `ImageAnalysis` — the canonical single-image VLM output type,
+//! shared across `qwen` and `lfm` engines. Each engine's
+//! `ImageAnalysisTask` constructs values of this type; downstream
+//! consumers can pass `&ImageAnalysis` references between engine
+//! outputs without conversion.
+//!
+//! The type is named for what it holds (analysis of an image) rather
+//! than the upstream use case (representing a video scene via a
+//! keyframe). The `scene` field still carries the scene-category
+//! label within the analysis.
 
 use smol_str::SmolStr;
+// Bring `Vec` into scope under both std (resolves via the
+// `extern crate std`) and alloc-only (resolves via the
+// `extern crate alloc as std` alias in lib.rs).
+use std::vec::Vec;
 
-/// Structured scene-level VLM output. Construct via an engine's
-/// `SceneTask::parse` (the `Task::parse` impl) or, for tests/builders,
-/// [`SceneAnalysis::new`]
+/// Structured single-image VLM output. Construct via an engine's
+/// `ImageAnalysisTask::parse` (the `Task::parse` impl) or, for
+/// tests/builders, [`ImageAnalysis::new`]
 /// followed by `with_*` chains. All fields are private; the accessor
 /// surface follows the rest of the crate's `scenesdetect`-style getter /
 /// `with_*` / `set_*` convention.
 ///
 /// Detection-array fields (`subjects` / `objects` / `actions` / `mood` /
 /// `lighting`) are `Vec<SmolStr>` — flat label lists, no per-detection
-/// confidence. The previous design wrapped each label in a
-/// `Detection { label, confidence }` and stamped a hardcoded `0.8`
-/// per entry; round-14 dropped that placeholder because flat-confidence
-/// is a no-op for both UX and search-time ranking, and VLM self-reported
-/// confidence is poorly calibrated. If a downstream consumer needs
-/// per-detection scoring, the practical sources are search-time
-/// embedding similarity or scene-aggregation metrics — not VLM
-/// self-report.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct SceneAnalysis {
+/// confidence. Wrapping each label in a `Detection { label, confidence }`
+/// would require a confidence source the VLM can't reliably provide —
+/// VLM self-reported confidence is poorly calibrated, and a hardcoded
+/// placeholder is a no-op for both UX and search-time ranking. If a
+/// downstream consumer needs per-detection scoring, the practical
+/// sources are search-time embedding similarity or scene-aggregation
+/// metrics, not VLM self-report.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ImageAnalysis {
   scene: SmolStr,
   description: SmolStr,
   subjects: Vec<SmolStr>,
@@ -35,8 +45,8 @@ pub struct SceneAnalysis {
   tags: Vec<SmolStr>,
 }
 
-impl SceneAnalysis {
-  /// Construct an empty `SceneAnalysis` (all fields default).
+impl ImageAnalysis {
+  /// Construct an empty `ImageAnalysis` (all fields default).
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn new() -> Self {
     Self::default()
@@ -246,22 +256,27 @@ impl SceneAnalysis {
   }
 }
 
+// Tests run under both std (default) and `--no-default-features
+// --features alloc`: `vec!` / `format!` are alloc macros, not
+// std-only — bring them into scope explicitly so the std prelude
+// isn't required.
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::vec;
 
   #[test]
   fn default_is_empty() {
-    let s = SceneAnalysis::new();
+    let s = ImageAnalysis::new();
     assert!(s.scene().is_empty());
     assert!(s.description().is_empty());
     assert!(s.subjects().is_empty());
-    assert_eq!(s, SceneAnalysis::default());
+    assert_eq!(s, ImageAnalysis::default());
   }
 
   #[test]
   fn builder_chains() {
-    let s = SceneAnalysis::new()
+    let s = ImageAnalysis::new()
       .with_scene("airport")
       .with_description("travelers walking through terminal")
       .with_subjects(vec!["middle-aged woman".into(), "child".into()])
@@ -273,7 +288,7 @@ mod tests {
 
   #[test]
   fn set_in_place() {
-    let mut s = SceneAnalysis::new();
+    let mut s = ImageAnalysis::new();
     s.set_scene("plaza");
     assert_eq!(s.scene(), "plaza");
   }
