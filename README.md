@@ -6,7 +6,7 @@
 Engine-agnostic structured-output abstraction for LLMs — `Task` trait, `Grammar` enum (JSON Schema, Lark, Regex), and the canonical `ImageAnalysis` data type. Decouples a prompt + grammar + parser from any specific inference backend.
 
 [<img alt="github" src="https://img.shields.io/badge/github-findit--ai/llmtask-8da0cb?style=for-the-badge&logo=Github" height="22">][Github-url]
-<img alt="LoC" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fal8n%2FREPLACE_WITH_LLMTASK_GIST_ID%2Fraw%2Fllmtask" height="22">
+<img alt="LoC" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fal8n%2F327b2a8aef9003246e45c6e47fe63937%2Fraw%2Fllmtask" height="22">
 [<img alt="Build" src="https://img.shields.io/github/actions/workflow/status/findit-ai/llmtask/ci.yml?logo=Github-Actions&style=for-the-badge" height="22">][CI-url]
 [<img alt="codecov" src="https://img.shields.io/codecov/c/gh/findit-ai/llmtask?style=for-the-badge&token=REPLACE_WITH_CODECOV_TOKEN&logo=codecov" height="22">][codecov-url]
 
