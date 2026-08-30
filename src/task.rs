@@ -143,11 +143,16 @@ mod json {
     /// `serde_json` failed to parse the response as valid JSON.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    /// JSON parsed but one or more required schema fields are absent or
-    /// present as JSON `null`. Both cases are treated as missing because
-    /// the schema requires every listed field to carry a string or array
-    /// value, never null.
-    #[error("schema violation: required fields missing or null: {0:?}")]
+    /// JSON parsed but one or more schema fields are unusable: a required
+    /// field absent or present as JSON `null`, or any listed field (required
+    /// or optional) present with a JSON type its schema entry can't satisfy
+    /// (e.g. a number where a string or array of strings is expected). All
+    /// three cases are folded into one variant because the schema requires
+    /// every listed field to carry a string or array-of-strings value —
+    /// never null, and never a type the field's shape can't hold — so a
+    /// decoder that violates any of them has drifted the same way from the
+    /// caller's perspective: the field's value can't be used.
+    #[error("schema violation: required fields missing, null, or invalid: {0:?}")]
     MissingFields(Vec<&'static str>),
     /// JSON parsed and had no missing fields, but every value was empty.
     #[error("structured response had no usable fields")]

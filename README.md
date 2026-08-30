@@ -24,11 +24,13 @@ Engine-agnostic structured-output abstraction for LLMs — `Task` trait, `Gramma
 - **[`Task`]** — a trait carrying the four things every constrained-decoding call needs: a prompt, a borrowed schema (`type Value`), a grammar wrapper (`Grammar` enum), and a typed parser (`type Output`, `type ParseError`). Engines accept any `T: Task<Value = ...>`, so a `Task` written once runs against any engine in the ecosystem (`lfm`, `qwen`, …) without translation.
 - **[`Grammar`]** — an enum over the constrained-decoding surfaces real engines accept: JSON Schema (`Grammar::JsonSchema`, behind the `json` feature), Lark (`Grammar::Lark`), and Regex (`Grammar::Regex(RegexGrammar)`, behind the `regex` feature — the wrapper holds both the source pattern and a default-options compiled regex, guaranteeing engine grammar and local validation describe the same language). Engines pattern-match and return [`UnsupportedGrammar`] when they don't speak a given variant — the caller can then route to a different backend.
 - **[`ImageAnalysis`]** — the canonical single-image VLM output shape (scene category, description, subjects/objects/actions/emotion/lighting lists, shot-type label, search tags, category labels). Lets multiple VLM engines (`lfm`, `qwen`) produce values of the same type so downstream consumers compare and merge results without per-engine adapters.
+- **[`ImageAnalysisTask`]** — the canonical `Task` implementation producing an `ImageAnalysis`: prompt, JSON Schema (`additionalProperties: false`, nine required fields + optional `categories`), and a parser resilient to constrained-decoder output drift (comma-vs-array label confusion, null-vs-missing required fields, wrong-type fields — all surfaced as a named `JsonParseError`, never silently dropped). Behind the `json` feature. `lfm` and `qwen3-vl` both ran their own byte-for-byte-equivalent copy of this task before it moved up here.
 
 [`Task`]: https://docs.rs/llmtask/latest/llmtask/task/trait.Task.html
 [`Grammar`]: https://docs.rs/llmtask/latest/llmtask/grammar/enum.Grammar.html
 [`UnsupportedGrammar`]: https://docs.rs/llmtask/latest/llmtask/grammar/struct.UnsupportedGrammar.html
 [`ImageAnalysis`]: https://docs.rs/llmtask/latest/llmtask/image_analysis/struct.ImageAnalysis.html
+[`ImageAnalysisTask`]: https://docs.rs/llmtask/latest/llmtask/image_analysis/struct.ImageAnalysisTask.html
 
 ## Why an engine-agnostic Task layer?
 
@@ -55,6 +57,7 @@ A `Task` written today against a JSON Schema runs through `lfm` (llguidance) and
 - **Optional `regex` feature** — pre-compiled `regex::Regex` in the variant (validation enforced by the type), plus `as_regex()` / `as_regex_pattern()` helpers.
 - **Optional `serde` feature** — `Serialize` / `Deserialize` on `ImageAnalysis` for downstream wire formats.
 - **Canonical `ImageAnalysis`** — ten-field single-image VLM output shape with builder-style API (`with_*` / `set_*`), shared across the findit-studio engines.
+- **Canonical `ImageAnalysisTask`** (behind `json`) — the prompt + schema + resilient parser that produces an `ImageAnalysis`, so every engine runs the same task instead of a per-engine copy.
 
 ## Example
 
@@ -164,17 +167,17 @@ impl Task for TimestampTask {
 ```toml
 [dependencies]
 # Default: JSON Schema support on, Lark always available, regex off, serde off.
-llmtask = "0.2"
+llmtask = "0.3"
 
 # Lark-only build (no serde_json, no regex):
 # `alloc` is required — without it the public API is empty.
-llmtask = { version = "0.2", default-features = false, features = ["alloc"] }
+llmtask = { version = "0.3", default-features = false, features = ["alloc"] }
 
 # Regex-only build (no serde_json; `regex` already implies `alloc`):
-llmtask = { version = "0.2", default-features = false, features = ["regex"] }
+llmtask = { version = "0.3", default-features = false, features = ["regex"] }
 
 # Everything:
-llmtask = { version = "0.2", features = ["json", "regex", "serde"] }
+llmtask = { version = "0.3", features = ["json", "regex", "serde"] }
 ```
 
 | Feature  | Default | What it adds                                                                                  |
