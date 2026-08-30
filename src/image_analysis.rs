@@ -22,7 +22,7 @@ use std::vec::Vec;
 /// surface follows the rest of the crate's `scenesdetect`-style getter /
 /// `with_*` / `set_*` convention.
 ///
-/// Detection-array fields (`subjects` / `objects` / `actions` / `mood` /
+/// Detection-array fields (`subjects` / `objects` / `actions` / `emotion` /
 /// `lighting`) are `Vec<SmolStr>` — flat label lists, no per-detection
 /// confidence. Wrapping each label in a `Detection { label, confidence }`
 /// would require a confidence source the VLM can't reliably provide —
@@ -39,10 +39,11 @@ pub struct ImageAnalysis {
   subjects: Vec<SmolStr>,
   objects: Vec<SmolStr>,
   actions: Vec<SmolStr>,
-  mood: Vec<SmolStr>,
+  emotion: Vec<SmolStr>,
   shot_type: SmolStr,
   lighting: Vec<SmolStr>,
   tags: Vec<SmolStr>,
+  categories: Vec<SmolStr>,
 }
 
 impl ImageAnalysis {
@@ -166,25 +167,25 @@ impl ImageAnalysis {
     self
   }
 
-  // --- mood ---
+  // --- emotion ---
 
-  /// Scene-level mood terms.
+  /// Scene-level emotion terms.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn mood(&self) -> &[SmolStr] {
-    &self.mood
+  pub fn emotion(&self) -> &[SmolStr] {
+    &self.emotion
   }
 
-  /// Builder-style setter for `mood`.
+  /// Builder-style setter for `emotion`.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn with_mood(mut self, val: Vec<SmolStr>) -> Self {
-    self.mood = val;
+  pub fn with_emotion(mut self, val: Vec<SmolStr>) -> Self {
+    self.emotion = val;
     self
   }
 
-  /// In-place setter for `mood`.
+  /// In-place setter for `emotion`.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn set_mood(&mut self, val: Vec<SmolStr>) -> &mut Self {
-    self.mood = val;
+  pub fn set_emotion(&mut self, val: Vec<SmolStr>) -> &mut Self {
+    self.emotion = val;
     self
   }
 
@@ -254,6 +255,28 @@ impl ImageAnalysis {
     self.tags = val;
     self
   }
+
+  // --- categories ---
+
+  /// Broad content-category labels, coarser-grained than `tags`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub fn categories(&self) -> &[SmolStr] {
+    &self.categories
+  }
+
+  /// Builder-style setter for `categories`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub fn with_categories(mut self, val: Vec<SmolStr>) -> Self {
+    self.categories = val;
+    self
+  }
+
+  /// In-place setter for `categories`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub fn set_categories(&mut self, val: Vec<SmolStr>) -> &mut Self {
+    self.categories = val;
+    self
+  }
 }
 
 // Tests run under both std (default) and `--no-default-features
@@ -280,16 +303,24 @@ mod tests {
       .with_scene("airport")
       .with_description("travelers walking through terminal")
       .with_subjects(vec!["middle-aged woman".into(), "child".into()])
-      .with_tags(vec!["airport".into(), "travel".into(), "indoor".into()]);
+      .with_emotion(vec!["busy".into()])
+      .with_tags(vec!["airport".into(), "travel".into(), "indoor".into()])
+      .with_categories(vec!["travel".into()]);
     assert_eq!(s.scene(), "airport");
     assert_eq!(s.subjects().len(), 2);
+    assert_eq!(s.emotion().len(), 1);
     assert_eq!(s.tags().len(), 3);
+    assert_eq!(s.categories().len(), 1);
   }
 
   #[test]
   fn set_in_place() {
     let mut s = ImageAnalysis::new();
     s.set_scene("plaza");
+    s.set_emotion(vec!["calm".into()]);
+    s.set_categories(vec!["landscape".into()]);
     assert_eq!(s.scene(), "plaza");
+    assert_eq!(s.emotion().len(), 1);
+    assert_eq!(s.categories().len(), 1);
   }
 }

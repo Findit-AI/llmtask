@@ -23,7 +23,7 @@ Engine-agnostic structured-output abstraction for LLMs — `Task` trait, `Gramma
 
 - **[`Task`]** — a trait carrying the four things every constrained-decoding call needs: a prompt, a borrowed schema (`type Value`), a grammar wrapper (`Grammar` enum), and a typed parser (`type Output`, `type ParseError`). Engines accept any `T: Task<Value = ...>`, so a `Task` written once runs against any engine in the ecosystem (`lfm`, `qwen`, …) without translation.
 - **[`Grammar`]** — an enum over the constrained-decoding surfaces real engines accept: JSON Schema (`Grammar::JsonSchema`, behind the `json` feature), Lark (`Grammar::Lark`), and Regex (`Grammar::Regex(RegexGrammar)`, behind the `regex` feature — the wrapper holds both the source pattern and a default-options compiled regex, guaranteeing engine grammar and local validation describe the same language). Engines pattern-match and return [`UnsupportedGrammar`] when they don't speak a given variant — the caller can then route to a different backend.
-- **[`ImageAnalysis`]** — the canonical single-image VLM output shape (scene category, description, subjects/objects/actions/mood/lighting lists, shot-type label, search tags). Lets multiple VLM engines (`lfm`, `qwen`) produce values of the same type so downstream consumers compare and merge results without per-engine adapters.
+- **[`ImageAnalysis`]** — the canonical single-image VLM output shape (scene category, description, subjects/objects/actions/emotion/lighting lists, shot-type label, search tags, category labels). Lets multiple VLM engines (`lfm`, `qwen`) produce values of the same type so downstream consumers compare and merge results without per-engine adapters.
 
 [`Task`]: https://docs.rs/llmtask/latest/llmtask/task/trait.Task.html
 [`Grammar`]: https://docs.rs/llmtask/latest/llmtask/grammar/enum.Grammar.html
@@ -54,7 +54,7 @@ A `Task` written today against a JSON Schema runs through `lfm` (llguidance) and
 - **Optional `json` feature** (default-on) — `Grammar::JsonSchema(serde_json::Value)` plus the `JsonParseError` convenience type. Drop it via `default-features = false, features = ["alloc"]` (or `"regex"` / `"serde"`, both of which imply `alloc`) to get a Lark-or-Regex-only build with no `serde_json` dep. NOTE: `alloc` is required to reach any public API — `default-features = false` alone exposes nothing.
 - **Optional `regex` feature** — pre-compiled `regex::Regex` in the variant (validation enforced by the type), plus `as_regex()` / `as_regex_pattern()` helpers.
 - **Optional `serde` feature** — `Serialize` / `Deserialize` on `ImageAnalysis` for downstream wire formats.
-- **Canonical `ImageAnalysis`** — nine-field single-image VLM output shape with builder-style API (`with_*` / `set_*`), shared across the findit-studio engines.
+- **Canonical `ImageAnalysis`** — ten-field single-image VLM output shape with builder-style API (`with_*` / `set_*`), shared across the findit-studio engines.
 
 ## Example
 
