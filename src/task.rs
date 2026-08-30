@@ -130,6 +130,8 @@ mod json {
   // `extern crate alloc as std` alias in lib.rs).
   use std::vec::Vec;
 
+  use smol_str::SmolStr;
+
   /// Convenience parse-error type for [`crate::Task`]
   /// implementations whose model output is JSON. Available behind
   /// the `json` feature.
@@ -154,6 +156,17 @@ mod json {
     /// caller's perspective: the field's value can't be used.
     #[error("schema violation: required fields missing, null, or invalid: {0:?}")]
     MissingFields(Vec<&'static str>),
+    /// JSON parsed as an object, but it carries one or more keys outside
+    /// the Task's declared `properties` — the runtime counterpart of the
+    /// schema's `additionalProperties: false`. Distinct from
+    /// [`Self::MissingFields`]: that variant names DECLARED fields whose
+    /// *value* is absent, null, or wrong-typed, using `&'static str`
+    /// because the declared field names are known at compile time. An
+    /// unknown key is, by definition, not one of those names — it's
+    /// arbitrary decoder output — so it can't borrow a `'static` name and
+    /// is carried as an owned [`SmolStr`] instead.
+    #[error("schema violation: object has fields outside the declared schema: {0:?}")]
+    UnknownFields(Vec<SmolStr>),
     /// JSON parsed and had no missing fields, but every value was empty.
     #[error("structured response had no usable fields")]
     NoUsableFields,

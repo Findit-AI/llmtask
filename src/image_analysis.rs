@@ -408,19 +408,22 @@ Rules:
 - Use empty arrays or empty strings when a field is unknown.
 - Do not return markdown or any text outside the JSON object."#;
 
-  /// Names of the nine REQUIRED schema fields, in `ImageAnalysis`'s
-  /// field order. `categories` is deliberately absent: it's the one
-  /// field this Task marks optional (see the module docs and
-  /// [`build_schema`]) — an object missing `categories` entirely still
-  /// parses, defaulting to an empty list. The other nine were already
-  /// required in both engine copies this task replaces (`tags`
-  /// included), so that convention carries forward unchanged; extending
-  /// it to `categories` too was the one available choice this census
-  /// didn't dictate, and "optional, defaults empty" was chosen because
-  /// `categories` is the newly-added field with no prior engine
-  /// producing it — treating its total absence as a schema violation
-  /// would reject every response from a still-unmigrated prompt/engine
-  /// pairing instead of just leaving the list empty.
+  /// Names of all ten REQUIRED schema fields, in `ImageAnalysis`'s field
+  /// order — every `properties` entry the schema declares (see
+  /// [`build_schema`]).
+  ///
+  /// `categories` was originally the one field this Task marked
+  /// optional: the newly-added field with no prior engine producing it,
+  /// so an object missing it entirely still parsed, defaulting to an
+  /// empty list, rather than rejecting every response from a
+  /// still-unmigrated prompt/engine pairing. The owner overturned that
+  /// choice in the same round that addressed Codex R1 (PR #5) —
+  /// `categories` is now required like the other nine, and an object
+  /// missing it is `JsonParseError::MissingFields` like any other
+  /// missing field (see `categories_absent_is_rejected` in the tests
+  /// below, which replaces the old `categories_absent_defaults_to_empty`
+  /// regression). The prompt already instructs the model to always
+  /// return `categories`, so this needed no prompt change.
   const REQUIRED_FIELDS: &[&str] = &[
     "scene",
     "description",
@@ -431,6 +434,7 @@ Rules:
     "shot_type",
     "lighting",
     "tags",
+    "categories",
   ];
 
   /// The image-analysis task. Construct via [`ImageAnalysisTask::new`].
@@ -448,7 +452,7 @@ Rules:
   ///   "scene": "office", "description": "two people talking",
   ///   "subjects": ["person"], "objects": [], "actions": [],
   ///   "emotion": [], "shot_type": "wide shot", "lighting": [],
-  ///   "tags": ["office", "meeting"]
+  ///   "tags": ["office", "meeting"], "categories": ["business"]
   /// }"#;
   /// let analysis = task.parse(raw).expect("parse should succeed");
   /// assert_eq!(analysis.scene(), "office");
@@ -557,11 +561,24 @@ Rules:
       let value: Value = serde_json::from_str(raw.trim())?;
       let Some(object) = value.as_object() else {
         // Not a JSON object at all: by definition every required field
-        // is absent. Naming all nine via `MissingFields` is more
+        // is absent. Naming all ten via `MissingFields` is more
         // informative than a generic "expected top-level object"
         // error, and needs nothing beyond `serde_json` to construct.
         return Err(JsonParseError::MissingFields(REQUIRED_FIELDS.to_vec()));
       };
+      // Runtime enforcement of `additionalProperties: false` (see
+      // `build_schema`): the schema declaring it constrains a
+      // constrained-decoding engine, but nothing about decoding the
+      // already-generated text through `serde_json::Map` — which accepts
+      // any key — enforces it. Checked before `unusable_fields` so an
+      // object with both an unknown key and a missing/invalid declared
+      // field is named for the unknown key first (a structural violation
+      // of "which keys are even allowed" takes precedence over per-field
+      // shape checks).
+      let unknown = unknown_fields(object);
+      if !unknown.is_empty() {
+        return Err(JsonParseError::UnknownFields(unknown));
+      }
       let unusable = unusable_fields(object);
       if !unusable.is_empty() {
         return Err(JsonParseError::MissingFields(unusable));
@@ -594,9 +611,15 @@ Rules:
     }
   }
 
-  /// JSON Schema for [`ImageAnalysisTask`]. `categories` is the only
-  /// `properties` entry absent from `required` — see [`REQUIRED_FIELDS`].
-  /// `additionalProperties: false` rejects any field outside this list.
+  /// JSON Schema for [`ImageAnalysisTask`]. All ten `properties` entries
+  /// are listed in `required` — see [`REQUIRED_FIELDS`] for `categories`'
+  /// history as this Task's one formerly-optional field.
+  /// `additionalProperties: false` declares that any field outside this
+  /// list is invalid — a constraint a constrained-decoding engine can
+  /// enforce at generation time, but `parse` cannot inherit for free: a
+  /// `serde_json::Map` decode of already-generated text accepts any key
+  /// regardless of what the schema says, so `parse` enforces this
+  /// promise itself via [`unknown_fields`].
   fn build_schema() -> Value {
     json!({
         "type": "object",
@@ -617,11 +640,27 @@ Rules:
     })
   }
 
-  /// Names the fields in `object` that are unusable: a required field
-  /// (per [`REQUIRED_FIELDS`]) absent or JSON `null`, or ANY listed
-  /// field — required or the optional `categories` — present with a
+  /// Names the keys in `object` that fall outside the schema's ten
+  /// declared `properties` (all of [`REQUIRED_FIELDS`]) — the runtime
+  /// enforcement of the schema's `additionalProperties: false` (see
+  /// [`build_schema`]'s doc comment).
+  ///
+  /// Owned [`SmolStr`] rather than `&'static str`: unlike a declared
+  /// field name, an unknown key isn't known at compile time — it's
+  /// whatever text the decoder emitted.
+  fn unknown_fields(object: &serde_json::Map<String, Value>) -> Vec<SmolStr> {
+    object
+      .keys()
+      .filter(|key| !REQUIRED_FIELDS.contains(&key.as_str()))
+      .map(SmolStr::new)
+      .collect()
+  }
+
+  /// Names the DECLARED fields in `object` that are unusable: a
+  /// [`REQUIRED_FIELDS`] field absent or JSON `null`, or present with a
   /// JSON type its shape can't hold (e.g. a number where a string or
-  /// array of strings is expected).
+  /// array of strings is expected). Keys outside the declared ten are a
+  /// separate concern, handled by [`unknown_fields`].
   ///
   /// Folding "wrong type" into the same named-field list as
   /// "missing"/"null" is a deliberate hardening over the two engine
@@ -641,24 +680,14 @@ Rules:
         unusable.push(field);
       }
     }
-    // `categories` is optional: absent or null is fine (extraction
-    // defaults it to an empty list). A *present* value still has to be
-    // shape-valid — silently dropping a wrong-type `categories` would
-    // hide the same drift `unusable_fields` catches for every other
-    // field.
-    if let Some(v) = object.get("categories")
-      && !matches!(v, Value::Null)
-      && !field_is_well_shaped("categories", v)
-    {
-      unusable.push("categories");
-    }
     unusable
   }
 
   /// `true` iff `value`'s JSON type is one `field`'s extractor can
-  /// consume. Presence/null is checked separately by the caller (`null`
-  /// means different things for required vs. optional fields); this
-  /// only judges the shape of a value that's actually present.
+  /// consume. Presence/null is checked separately by the caller
+  /// ([`unusable_fields`] treats an absent or `Value::Null` field as
+  /// unusable without consulting this function); this only judges the
+  /// shape of a value that's actually present and non-null.
   fn field_is_well_shaped(field: &str, value: &Value) -> bool {
     match field {
       // `scene` / `description`: bare string only — no array-wrapping
@@ -857,7 +886,7 @@ Rules:
 
     #[test]
     fn parse_comma_separated_tag_string() {
-      let json = r#"{"scene":"stage performance","description":"A singer on stage","subjects":[],"objects":["microphone"],"actions":["singing"],"emotion":["energetic"],"shot_type":"medium shot","lighting":["spotlight"],"tags":"concert, live music, spotlight"}"#;
+      let json = r#"{"scene":"stage performance","description":"A singer on stage","subjects":[],"objects":["microphone"],"actions":["singing"],"emotion":["energetic"],"shot_type":"medium shot","lighting":["spotlight"],"tags":"concert, live music, spotlight","categories":["music"]}"#;
       let task = ImageAnalysisTask::new();
       let result = task.parse(json).expect("parse should succeed");
       assert_eq!(
@@ -876,11 +905,28 @@ Rules:
       assert!(task.parse("{}").is_err());
     }
 
+    /// Repairs a vacuous fixture (Codex R1, PR #5): the original object
+    /// omitted eight of the nine required fields, so `.is_err()` passed
+    /// for the wrong reason — `MissingFields` naming the absent required
+    /// fields, never reaching the unknown-key check at all. This fixture
+    /// is otherwise-complete (all ten declared properties present and
+    /// well-shaped) plus exactly one undeclared key, so the ONLY
+    /// violation possible is the unknown key, and the assertion now
+    /// pins the specific error variant instead of any error.
     #[test]
     fn reject_unknown_json_fields() {
-      let json = r#"{"description":"A singer on stage","extra":"unexpected"}"#;
+      let json = r#"{"scene":"office","description":"people working","subjects":["person"],"objects":[],"actions":[],"emotion":[],"shot_type":"wide","lighting":[],"tags":["work"],"categories":["business"],"extra":"unexpected"}"#;
       let task = ImageAnalysisTask::new();
-      assert!(task.parse(json).is_err());
+      let err = task
+        .parse(json)
+        .expect_err("a key outside the ten declared properties must be rejected");
+      match err {
+        JsonParseError::UnknownFields(fields) => assert!(
+          fields.iter().any(|f| f == "extra"),
+          "expected 'extra' named in {fields:?}"
+        ),
+        other => panic!("expected UnknownFields naming extra, got {other:?}"),
+      }
     }
 
     #[test]
@@ -892,7 +938,7 @@ Rules:
 
     #[test]
     fn parse_array_form_subjects() {
-      let json_list = r#"{"scene":"x","description":"y","subjects":["a","b"],"objects":[],"actions":[],"emotion":[],"shot_type":"x","lighting":[],"tags":["t"]}"#;
+      let json_list = r#"{"scene":"x","description":"y","subjects":["a","b"],"objects":[],"actions":[],"emotion":[],"shot_type":"x","lighting":[],"tags":["t"],"categories":[]}"#;
       let task = ImageAnalysisTask::new();
       let result = task.parse(json_list).expect("list-form parse");
       assert_eq!(result.subjects().len(), 2);
@@ -902,7 +948,7 @@ Rules:
 
     #[test]
     fn subjects_string_form_treated_as_single_label() {
-      let json = r#"{"scene":"x","description":"y","subjects":"middle-aged man, in red jacket","objects":[],"actions":[],"emotion":[],"shot_type":"x","lighting":[],"tags":["t"]}"#;
+      let json = r#"{"scene":"x","description":"y","subjects":"middle-aged man, in red jacket","objects":[],"actions":[],"emotion":[],"shot_type":"x","lighting":[],"tags":["t"],"categories":[]}"#;
       let task = ImageAnalysisTask::new();
       let result = task.parse(json).expect("string-form parse");
       assert_eq!(
@@ -924,7 +970,8 @@ Rules:
             "emotion": [],
             "shot_type": "",
             "lighting": [],
-            "tags": []
+            "tags": [],
+            "categories": []
           }"#;
       let task = ImageAnalysisTask::new();
       let err = task
@@ -947,7 +994,8 @@ Rules:
             "emotion": [],
             "shot_type": "",
             "lighting": [],
-            "tags": []
+            "tags": [],
+            "categories": []
           }"#;
       let task = ImageAnalysisTask::new().with_accept_empty(true);
       let result = task
@@ -976,7 +1024,8 @@ Rules:
             "emotion": [],
             "shot_type": "",
             "lighting": [],
-            "tags": ["concert", "live music"]
+            "tags": ["concert", "live music"],
+            "categories": []
           }"#;
       let task = ImageAnalysisTask::new();
       let err = task
@@ -999,7 +1048,8 @@ Rules:
             "emotion": [],
             "shot_type": "",
             "lighting": [],
-            "tags": []
+            "tags": [],
+            "categories": []
           }"#;
       let task = ImageAnalysisTask::new();
       let err = task
@@ -1022,7 +1072,8 @@ Rules:
             "emotion": [],
             "shot_type": "",
             "lighting": [],
-            "tags": []
+            "tags": [],
+            "categories": []
           }"#;
       let task = ImageAnalysisTask::new();
       let err = task
@@ -1045,7 +1096,8 @@ Rules:
             "emotion": [],
             "shot_type": "",
             "lighting": [],
-            "tags": ["conversation"]
+            "tags": ["conversation"],
+            "categories": []
           }"#;
       let task = ImageAnalysisTask::new();
       let result = task
@@ -1069,7 +1121,8 @@ Rules:
             "emotion": [],
             "shot_type": "",
             "lighting": [],
-            "tags": []
+            "tags": [],
+            "categories": []
           }"#;
       let task = ImageAnalysisTask::new();
       let result = task.parse(json).expect(
@@ -1094,7 +1147,8 @@ Rules:
             "emotion": [],
             "shot_type": "",
             "lighting": [],
-            "tags": []
+            "tags": [],
+            "categories": []
           }"#;
       let task = ImageAnalysisTask::new();
       let result = task
@@ -1114,7 +1168,8 @@ Rules:
             "emotion": [],
             "shot_type": "",
             "lighting": [],
-            "tags": []
+            "tags": [],
+            "categories": []
           }"#;
       let task = ImageAnalysisTask::new();
       let result = task
@@ -1134,7 +1189,8 @@ Rules:
             "emotion": [],
             "shot_type": "",
             "lighting": [],
-            "tags": []
+            "tags": [],
+            "categories": []
           }"#;
       let task = ImageAnalysisTask::new();
       let result = task
@@ -1154,7 +1210,8 @@ Rules:
             "emotion": ["calm"],
             "shot_type": "",
             "lighting": [],
-            "tags": []
+            "tags": [],
+            "categories": []
           }"#;
       let task = ImageAnalysisTask::new();
       let err = task
@@ -1177,7 +1234,8 @@ Rules:
             "emotion": [],
             "shot_type": "",
             "lighting": ["natural light"],
-            "tags": []
+            "tags": [],
+            "categories": []
           }"#;
       let task = ImageAnalysisTask::new();
       let err = task
@@ -1200,7 +1258,8 @@ Rules:
             "emotion": ["tense"],
             "shot_type": "",
             "lighting": ["low light"],
-            "tags": []
+            "tags": [],
+            "categories": []
           }"#;
       let task = ImageAnalysisTask::new();
       let err = task
@@ -1312,7 +1371,8 @@ Rules:
             "emotion": ["festive"],
             "shot_type": "wide shot",
             "lighting": ["natural, dramatic backlight"],
-            "tags": ["july 4, 2026"]
+            "tags": ["july 4, 2026"],
+            "categories": ["celebration"]
           }"#;
       let task = ImageAnalysisTask::new();
       let result = task.parse(json).expect("parse should succeed");
@@ -1330,7 +1390,7 @@ Rules:
     #[test]
     fn parse_shot_type_list_form() {
       // shot_type accepts the list form `["wide shot"]` (one element).
-      let json_one = r#"{"scene":"x","description":"y","subjects":[],"objects":[],"actions":[],"emotion":[],"shot_type":["wide shot"],"lighting":[],"tags":["t"]}"#;
+      let json_one = r#"{"scene":"x","description":"y","subjects":[],"objects":[],"actions":[],"emotion":[],"shot_type":["wide shot"],"lighting":[],"tags":["t"],"categories":[]}"#;
       let task = ImageAnalysisTask::new();
       let result = task.parse(json_one).expect("single-element list parse");
       assert_eq!(result.shot_type(), "wide shot");
@@ -1359,16 +1419,58 @@ Rules:
     // discipline, and the wrong-type / non-object resilience cases the
     // brief calls for =====
 
+    /// `categories` was the one field this Task marked optional through
+    /// 0.3.0's initial merge (see [`REQUIRED_FIELDS`]'s doc comment for
+    /// the full history); this test used to be
+    /// `categories_absent_defaults_to_empty`, pinning that an object
+    /// missing `categories` still parsed. The owner overturned the
+    /// optional ruling in the same round that addressed Codex R1
+    /// (PR #5): `categories` is now required like the other nine, so
+    /// this regression is flipped — absence is now refused, the same as
+    /// omitting any other required field.
     #[test]
-    fn categories_absent_defaults_to_empty() {
-      // `categories` omitted entirely (not merely empty) — it's the one
-      // optional field; this must not raise MissingFields.
+    fn categories_absent_is_rejected() {
       let json = r#"{"scene":"office","description":"people working","subjects":["person"],"objects":[],"actions":[],"emotion":[],"shot_type":"wide","lighting":[],"tags":["work"]}"#;
       let task = ImageAnalysisTask::new();
-      let result = task
+      let err = task
         .parse(json)
-        .expect("categories is optional; absence must not fail parsing");
-      assert!(result.categories().is_empty());
+        .expect_err("categories is now required; absence must be rejected");
+      match err {
+        JsonParseError::MissingFields(fields) => assert!(
+          fields.contains(&"categories"),
+          "expected 'categories' named in {fields:?}"
+        ),
+        other => panic!("expected MissingFields naming categories, got {other:?}"),
+      }
+    }
+
+    /// Codex R1 (PR #5): `unusable_fields` used to exempt a *present*
+    /// `categories: null` from the shape check (it fell through a guard
+    /// that only made sense back when a bare `!matches!(v, Value::Null)`
+    /// meant "is this key even here" — categories was still optional at
+    /// the time), silently defaulting it to an empty list even though
+    /// the schema's `categories` entry allows only an array of strings,
+    /// never null. Now that `categories` is a required field (see
+    /// `categories_absent_is_rejected` above), a present `null` and a
+    /// totally absent key both fall through the exact same
+    /// `None | Some(Value::Null) => false` arm in `unusable_fields` and
+    /// produce the same named error — this test keeps the present-null
+    /// input shape pinned separately from the absent-key shape so a
+    /// future regression in either branch is still caught.
+    #[test]
+    fn reject_present_null_categories_with_named_error() {
+      let json = r#"{"scene":"office","description":"people working","subjects":["person"],"objects":[],"actions":[],"emotion":[],"shot_type":"wide","lighting":[],"tags":["work"],"categories":null}"#;
+      let task = ImageAnalysisTask::new();
+      let err = task
+        .parse(json)
+        .expect_err("a present null categories must be rejected, not silently defaulted");
+      match err {
+        JsonParseError::MissingFields(fields) => assert!(
+          fields.contains(&"categories"),
+          "expected 'categories' named in {fields:?}"
+        ),
+        other => panic!("expected MissingFields naming categories, got {other:?}"),
+      }
     }
 
     #[test]
@@ -1398,19 +1500,50 @@ Rules:
       }
     }
 
+    // Renamed from `reject_wrong_type_optional_field_with_named_error`:
+    // `categories` is no longer this Task's optional field (see
+    // `categories_absent_is_rejected` above), so the old name's
+    // "optional" no longer describes it — the fixture and assertion are
+    // unchanged, a wrong-type `categories` was already rejected the same
+    // way before the required/optional ruling changed.
     #[test]
-    fn reject_wrong_type_optional_field_with_named_error() {
+    fn reject_wrong_type_categories_field_with_named_error() {
       let json = r#"{"scene":"office","description":"people working","subjects":["person"],"objects":[],"actions":[],"emotion":[],"shot_type":"wide","lighting":[],"tags":["work"],"categories":42}"#;
       let task = ImageAnalysisTask::new();
       let err = task
         .parse(json)
-        .expect_err("wrong-type optional field must still be rejected, not silently dropped");
+        .expect_err("wrong-type categories field must still be rejected, not silently dropped");
       match err {
         JsonParseError::MissingFields(fields) => assert!(
           fields.contains(&"categories"),
           "expected 'categories' named in {fields:?}"
         ),
         other => panic!("expected MissingFields naming categories, got {other:?}"),
+      }
+    }
+
+    /// Class-sweep addition (R1 follow-through, not itself a Codex
+    /// finding): `field_is_well_shaped`'s array arm checks
+    /// `items.iter().all(Value::is_string)`, enforcing the schema's
+    /// `items: {"type": "string"}` promise for every array-shaped field.
+    /// That was already implemented but had no element-level regression
+    /// — only a whole-field wrong type (`subjects: 42`, above) had
+    /// coverage, which exercises a different branch of
+    /// `field_is_well_shaped` than a well-typed array with one bad
+    /// element does.
+    #[test]
+    fn reject_array_field_with_non_string_element() {
+      let json = r#"{"scene":"office","description":"people working","subjects":["person",42],"objects":[],"actions":[],"emotion":[],"shot_type":"wide","lighting":[],"tags":["work"]}"#;
+      let task = ImageAnalysisTask::new();
+      let err = task
+        .parse(json)
+        .expect_err("an array field with a non-string element must be rejected");
+      match err {
+        JsonParseError::MissingFields(fields) => assert!(
+          fields.contains(&"subjects"),
+          "expected 'subjects' named in {fields:?}"
+        ),
+        other => panic!("expected MissingFields naming subjects, got {other:?}"),
       }
     }
 
@@ -1457,7 +1590,7 @@ Rules:
     /// non-compliant model instead of surfacing the drift.
     #[test]
     fn parse_does_not_lowercase_labels() {
-      let json = r#"{"scene":"Office","description":"Desc","subjects":["MidCase Person"],"objects":[],"actions":[],"emotion":[],"shot_type":"Wide Shot","lighting":[],"tags":["MixedCase"]}"#;
+      let json = r#"{"scene":"Office","description":"Desc","subjects":["MidCase Person"],"objects":[],"actions":[],"emotion":[],"shot_type":"Wide Shot","lighting":[],"tags":["MixedCase"],"categories":[]}"#;
       let task = ImageAnalysisTask::new();
       let result = task.parse(json).expect("parse should succeed");
       assert_eq!(result.scene(), "Office");
@@ -1516,9 +1649,10 @@ Rules:
         .as_array()
         .expect("required must be an array");
       assert_eq!(required.len(), REQUIRED_FIELDS.len());
+      assert_eq!(required.len(), 10, "all ten fields are required");
       assert!(
-        !required.iter().any(|v| v == "categories"),
-        "categories must be optional, not required"
+        required.iter().any(|v| v == "categories"),
+        "categories must be required, per the owner's ruling overturning the earlier optional choice"
       );
     }
 

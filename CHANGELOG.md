@@ -19,17 +19,25 @@
   field). The parser never lowercases at parse time — the discipline is
   prompt-only, pinned by `label_array_discipline_is_stated_in_prompt` and
   `parse_does_not_lowercase_labels`.
-- `categories` joins the JSON Schema's `properties` as the merged task's one
-  **optional** field (absent from `required`) — the newly-added
-  `ImageAnalysis` field with no prior engine producing it; the other nine
-  fields (`tags` included) stay required, matching both source copies.
+- `categories` joins the JSON Schema's `properties` as a **required** field
+  (see `REQUIRED_FIELDS`), matching the other nine (`tags` included) — the
+  newly-added `ImageAnalysis` field with no prior engine producing it.
 
 ### Changed
-- `JsonParseError::MissingFields` now also names a listed field (required or
-  the optional `categories`) that's present with a JSON type its schema entry
-  can't satisfy (e.g. a number where a string or array of strings is
-  expected) — previously only absent/null required fields were named, and a
-  wrong-type field fell through to a generic, unnamed `serde` error.
+- `JsonParseError::MissingFields` now also names a listed field that's
+  present with a JSON type its schema entry can't satisfy (e.g. a number
+  where a string or array of strings is expected) — previously only
+  absent/null required fields were named, and a wrong-type field fell
+  through to a generic, unnamed `serde` error.
+- `ImageAnalysisTask::parse` now fully enforces the schema it declares
+  instead of only partially checking it: an object key outside the ten
+  declared `properties` is rejected as a new `JsonParseError::UnknownFields`
+  (the runtime counterpart of the schema's `additionalProperties: false`,
+  which nothing previously checked against already-decoded JSON), and
+  `categories` — now a required field, see above — is held to the exact
+  same absent/null/wrong-type checks as the other nine, closing a gap where
+  a present `categories: null` used to silently default to an empty list
+  instead of being rejected.
 
 ## [0.2.0] - 2026-08-31
 
