@@ -164,17 +164,17 @@ impl Task for TimestampTask {
 ```toml
 [dependencies]
 # Default: JSON Schema support on, Lark always available, regex off, serde off.
-llmtask = "0.1"
+llmtask = "0.2"
 
 # Lark-only build (no serde_json, no regex):
 # `alloc` is required — without it the public API is empty.
-llmtask = { version = "0.1", default-features = false, features = ["alloc"] }
+llmtask = { version = "0.2", default-features = false, features = ["alloc"] }
 
 # Regex-only build (no serde_json; `regex` already implies `alloc`):
-llmtask = { version = "0.1", default-features = false, features = ["regex"] }
+llmtask = { version = "0.2", default-features = false, features = ["regex"] }
 
 # Everything:
-llmtask = { version = "0.1", features = ["json", "regex", "serde"] }
+llmtask = { version = "0.2", features = ["json", "regex", "serde"] }
 ```
 
 | Feature  | Default | What it adds                                                                                  |
