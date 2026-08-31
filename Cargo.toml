@@ -12,26 +12,8 @@ keywords      = ["llm", "vlm", "structured-output", "json-schema", "constrained-
 categories    = ["api-bindings", "text-processing", "data-structures"]
 
 [features]
-# `std` (full std-lib + dep std features) and `json` (the
-# JSON Schema variant + JsonParseError) are both default-on
-# because the canonical use case is "produce structured JSON
-# output via a constrained-decoding engine". A consumer that
-# wants Lark/Regex only — or a no_std + alloc build — drops
-# them via `default-features = false`.
 default = ["std", "json"]
-# `alloc` brings in the `smol_str` dep (the SmolStr type used by
-# `Grammar::Lark` and `ImageAnalysis` fields). Every public type
-# in this crate needs at least `alloc`; the bare-no_std build
-# (no features) only re-exports nothing reachable from
-# `pub use ...` and exists for upstream-`#![no_std]` parity.
 alloc = ["dep:smol_str"]
-# `std` is a strict superset of `alloc` — turning it on enables
-# the `std` features of dep crates (so `regex` gets unicode-perl,
-# `thiserror` gets its full machinery, etc.). Also bumps optional
-# `serde?/std` and `serde_json?/std` so std builds use the
-# std-aware variants of those deps when they're enabled by other
-# features (json pulls serde + serde_json; the user can also
-# enable serde alone).
 std = [
   "alloc",
   "thiserror/default",
@@ -41,43 +23,7 @@ std = [
   "serde?/std",
   "serde_json?/std",
 ]
-
-# Public Serialize/Deserialize derives on `ImageAnalysis`. Opt-in
-# (NOT pulled by `json`). Implies `alloc` because the derive
-# target lives behind the alloc gate, and pulls `serde/alloc`
-# because SmolStr's serde impl needs serde's alloc-mode visitor
-# traits (visit_string / visit_byte_buf) — without them, E0407.
 serde   = ["dep:serde", "serde/alloc", "alloc", "smol_str?/serde"]
-
-# JSON Schema support: the `Grammar::JsonSchema(Value)` variant,
-# the `JsonParseError` convenience type, and the JSON-related
-# constructors / accessors on `Grammar` (`json_schema`,
-# `as_json_schema`, `is_json_schema`). Implies `alloc` because
-# `serde_json::Value` requires alloc.
-#
-# Codex round 5 finding: this used to imply the public `serde`
-# feature too, which forced default builds (`std + json`) to turn
-# on Serialize/Deserialize for `ImageAnalysis` despite the README
-# saying serde is opt-in. Decoupled — serde_json still pulls
-# serde transitively as a dep (the serde crate is in the tree),
-# but `cfg(feature = "serde")` stays off unless the user opts
-# in explicitly. ImageAnalysis derives only fire under
-# `--features serde`.
-#
-# `dep:serde` + `serde/alloc` (Codex round 2, PR #5): the
-# duplicate-top-level-key guard in `image_analysis`'s parser is a
-# hand-written `serde::de::Visitor` / `MapAccess` implementation, so
-# it needs the `serde` crate's trait definitions directly — `serde`
-# being merely present transitively (as serde_json's own dependency)
-# doesn't make it `use`-able from THIS crate's code; only a direct,
-# active dependency does. This is orthogonal to the paragraph above:
-# `dep:serde` (can this crate link and `use` the serde crate at all)
-# and `cfg(feature = "serde")` (does this crate turn on ITS OWN
-# `serde` feature, deriving Serialize/Deserialize on `ImageAnalysis`)
-# are independent knobs — enabling the former here does not flip the
-# latter. `serde/alloc` is required alongside it: `Visitor::visit_string`
-# (needed to build `Value::String`) is itself gated on serde's own
-# `alloc`/`std` feature, which `dep:serde` alone does not turn on.
 json    = ["dep:serde_json", "dep:serde", "serde/alloc", "alloc"]
 
 # `Grammar::regex` (validating constructor) and `Grammar::as_regex` /
@@ -90,16 +36,11 @@ json    = ["dep:serde_json", "dep:serde", "serde/alloc", "alloc"]
 # preserving anchored validator via HIR `Hir::concat([Look::Start,
 # parsed_hir, Look::End])`. The HIR path avoids both the round-11
 # verbose-mode comment bug (raw string interpolation broke
-# `(?x)…# comment`) and the round-12 leftmost-first bug (Rust
+# `(?x)…# comment`) and the leftmost-first bug (Rust
 # `regex` returned the shorter `a` match for `a|ab` on `ab`).
 regex   = ["dep:regex", "dep:regex-syntax", "alloc"]
 
 [dependencies]
-# Every dep declared with `default-features = false` so the lib
-# doesn't silently link std under `--no-default-features
-# --features alloc,…` consumers. The crate's own `std` feature
-# is the only thing that turns each dep's `std`/`default` features
-# back on (see [features] above).
 serde      = { version = "1", default-features = false, features = ["derive"], optional = true }
 serde_json = { version = "1", default-features = false, features = ["alloc"], optional = true }
 smol_str   = { version = "0.3", default-features = false, optional = true }
