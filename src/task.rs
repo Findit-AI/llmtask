@@ -145,6 +145,20 @@ mod json {
     /// `serde_json` failed to parse the response as valid JSON.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// The top-level JSON object declared the same member name more than
+    /// once (e.g. `{"categories": null, "categories": []}`). A stock
+    /// `serde_json::Value` decode collapses a duplicate object member
+    /// silently — later overwrites earlier via `Map::insert` — before any
+    /// of this crate's validation runs, so a well-typed copy of a field
+    /// can mask an earlier null/wrong-typed copy (or the reverse,
+    /// depending only on which copy comes last in the text), and a
+    /// duplicate of a name [`Self::UnknownFields`] would otherwise catch
+    /// can no longer be seen once collapsed to one entry. Tasks that
+    /// decode their top-level object through a duplicate-checking parse
+    /// (e.g. `image_analysis::ImageAnalysisTask::parse`) return this
+    /// instead, naming the repeated key, before a `Value` is ever built.
+    #[error("schema violation: top-level key appears more than once: {0:?}")]
+    DuplicateField(SmolStr),
     /// JSON parsed but one or more schema fields are unusable: a required
     /// field absent or present as JSON `null`, or any listed field (required
     /// or optional) present with a JSON type its schema entry can't satisfy

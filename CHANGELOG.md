@@ -38,6 +38,19 @@
   same absent/null/wrong-type checks as the other nine, closing a gap where
   a present `categories: null` used to silently default to an empty list
   instead of being rejected.
+- `ImageAnalysisTask::parse` now refuses a top-level JSON object that
+  declares the same member name more than once, instead of silently
+  keeping only the last copy. `serde_json`'s stock `Value` decode
+  collapses a duplicate object member via last-write-wins `Map::insert`
+  before any schema validation runs, so e.g. `{"categories": null,
+  "categories": []}` used to parse successfully (the valid second copy
+  quietly won), while the reverse key order was rejected — the same
+  order-dependent bypass covered a wrong-typed duplicate of any required
+  field, and a duplicated key could never be named by
+  `JsonParseError::UnknownFields` once collapsed. The top-level object is
+  now decoded through a duplicate-checking parse that refuses the first
+  repeated member name it sees, before a `Value` is ever built, surfaced
+  as a new `JsonParseError::DuplicateField` naming the key.
 
 ## [0.2.0] - 2026-08-31
 

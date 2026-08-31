@@ -63,7 +63,22 @@ serde   = ["dep:serde", "serde/alloc", "alloc", "smol_str?/serde"]
 # but `cfg(feature = "serde")` stays off unless the user opts
 # in explicitly. ImageAnalysis derives only fire under
 # `--features serde`.
-json    = ["dep:serde_json", "alloc"]
+#
+# `dep:serde` + `serde/alloc` (Codex round 2, PR #5): the
+# duplicate-top-level-key guard in `image_analysis`'s parser is a
+# hand-written `serde::de::Visitor` / `MapAccess` implementation, so
+# it needs the `serde` crate's trait definitions directly — `serde`
+# being merely present transitively (as serde_json's own dependency)
+# doesn't make it `use`-able from THIS crate's code; only a direct,
+# active dependency does. This is orthogonal to the paragraph above:
+# `dep:serde` (can this crate link and `use` the serde crate at all)
+# and `cfg(feature = "serde")` (does this crate turn on ITS OWN
+# `serde` feature, deriving Serialize/Deserialize on `ImageAnalysis`)
+# are independent knobs — enabling the former here does not flip the
+# latter. `serde/alloc` is required alongside it: `Visitor::visit_string`
+# (needed to build `Value::String`) is itself gated on serde's own
+# `alloc`/`std` feature, which `dep:serde` alone does not turn on.
+json    = ["dep:serde_json", "dep:serde", "serde/alloc", "alloc"]
 
 # `Grammar::regex` (validating constructor) and `Grammar::as_regex` /
 # `Grammar::as_regex_pattern` accessors. Pulls in the `regex` crate.

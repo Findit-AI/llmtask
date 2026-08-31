@@ -351,9 +351,16 @@ pub use image_analysis_task::ImageAnalysisTask;
 /// line instead of repeating it on every item.
 #[cfg(feature = "json")]
 mod image_analysis_task {
+  use core::{cell::RefCell, fmt};
+
+  use serde::de::{self, Deserializer as _, MapAccess, SeqAccess, Visitor};
   use serde_json::{Value, json};
   use smol_str::SmolStr;
-  use std::vec::Vec;
+  // Bring `String` into scope under both std (resolves via the
+  // `extern crate std`) and alloc-only (resolves via the
+  // `extern crate alloc as std` alias in lib.rs) — needed by
+  // `TopLevelVisitor::visit_string`.
+  use std::{string::String, vec::Vec};
 
   use super::ImageAnalysis;
   use crate::{
@@ -558,7 +565,10 @@ Rules:
     }
 
     fn parse(&self, raw: &str) -> Result<Self::Output, JsonParseError> {
-      let value: Value = serde_json::from_str(raw.trim())?;
+      // Not a plain `serde_json::from_str` (see `parse_top_level_value`'s
+      // doc comment): that collapses a duplicate top-level member — later
+      // overwrites earlier — before any check below ever sees both copies.
+      let value: Value = parse_top_level_value(raw.trim())?;
       let Some(object) = value.as_object() else {
         // Not a JSON object at all: by definition every required field
         // is absent. Naming all ten via `MissingFields` is more
@@ -608,6 +618,159 @@ Rules:
         return Err(JsonParseError::NoUsableFields);
       }
       Ok(result)
+    }
+  }
+
+  // ===== duplicate-checked top-level parse (Codex R2, PR #5) =====
+
+  /// Deserializes `raw` into a [`Value`], refusing a TOP-level object
+  /// member name that appears more than once, instead of silently
+  /// collapsing it the way `serde_json::from_str::<Value>` (what this
+  /// replaced) does.
+  ///
+  /// `from_str::<Value>` builds the object via repeated `Map::insert`, so
+  /// a later member overwrites an earlier one with no trace left behind:
+  /// `{"categories": null, "categories": []}` and `{"categories": []}`
+  /// deserialize to the identical `Value`, while the reverse key order
+  /// (`{"categories": [], "categories": null}`) deserializes to the same
+  /// `Value` as `{"categories": null}` alone. Both orderings are schema
+  /// violations no compliant decoder should emit, but only one of the two
+  /// used to be caught — by [`unusable_fields`], and only because `null`
+  /// happened to survive the collapse — while the reverse order silently
+  /// passed; a duplicated key **outside** the declared ten could never be
+  /// named by [`unknown_fields`] at all, because by the time it runs the
+  /// `Map` remembers only the surviving copy. Checking here, before any
+  /// `Value` is built, is the only point where both copies are still
+  /// visible to compare.
+  ///
+  /// Scope is TOP-level only, deliberately: every one of [`build_schema`]'s
+  /// ten `properties` is `string` or `array of string` — this schema has
+  /// no `object`-valued field, at the top level or nested. A JSON object
+  /// can therefore only legitimately appear here as the document root;
+  /// anywhere else (e.g. an object smuggled into a `subjects` array
+  /// element in place of a string) it's already a wrong-shaped value that
+  /// [`field_is_well_shaped`] rejects on type alone, regardless of what
+  /// its own internal keys collapsed to. A future field that legitimately
+  /// nests an object would need this same duplicate check extended to it.
+  ///
+  /// This is also the crate's only JSON entry point: [`ImageAnalysisTask::parse`]
+  /// calls nothing else that builds a `Value` from text — no fenced-code
+  /// stripping, no secondary lenient parse. `reject_fenced_json` and
+  /// `reject_json_with_wrapper_text` (in the tests below) pass because
+  /// `raw.trim()` isn't valid/complete JSON on its own, not via a
+  /// different code path, so routing through here covers the whole parse
+  /// surface — there is no second `from_str`/`from_value` call anywhere in
+  /// this crate for a fenced or prose-wrapped variant to bypass.
+  fn parse_top_level_value(raw: &str) -> Result<Value, JsonParseError> {
+    let mut deserializer = serde_json::Deserializer::from_str(raw);
+    let duplicate: RefCell<Option<SmolStr>> = RefCell::new(None);
+    let visited = deserializer.deserialize_any(TopLevelVisitor {
+      duplicate: &duplicate,
+    });
+    match visited {
+      Ok(value) => {
+        // Mirrors `serde_json::from_str`'s own trailing-content check:
+        // rejects prose after the JSON object, an unclosed fence, etc.
+        // (`reject_fenced_json`, `reject_json_with_wrapper_text`).
+        deserializer.end()?;
+        Ok(value)
+      }
+      Err(err) => match duplicate.into_inner() {
+        Some(key) => Err(JsonParseError::DuplicateField(key)),
+        None => Err(JsonParseError::Json(err)),
+      },
+    }
+  }
+
+  /// [`Visitor`] behind [`parse_top_level_value`]. Mirrors
+  /// `serde_json::Value`'s own `Deserialize` impl method-for-method —
+  /// every shape produces the identical `Value` — except [`Self::visit_map`],
+  /// which refuses a repeated key instead of overwriting the earlier entry.
+  ///
+  /// `visit_i128` / `visit_u128` / `visit_none` / `visit_some` are not
+  /// overridden: this crate doesn't enable serde_json's
+  /// `arbitrary_precision` feature, and without it `deserialize_any` only
+  /// ever calls `visit_f64` / `visit_u64` / `visit_i64` for a JSON number
+  /// and `visit_unit` for `null` (verified against `serde_json`'s own
+  /// `ParserNumber` and null-literal dispatch). Those four methods are
+  /// unreachable through `serde_json::Deserializer`, so overriding them
+  /// here would be untested dead code; the `Visitor` trait's default
+  /// implementations (which forward sensibly on their own) still apply if
+  /// that ever changes.
+  struct TopLevelVisitor<'a> {
+    duplicate: &'a RefCell<Option<SmolStr>>,
+  }
+
+  impl<'de> Visitor<'de> for TopLevelVisitor<'_> {
+    type Value = Value;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+      f.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
+      Ok(Value::Bool(v))
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
+      Ok(Value::from(v))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
+      Ok(Value::from(v))
+    }
+
+    fn visit_f64<E>(self, v: f64) -> Result<Value, E> {
+      Ok(Value::from(v))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Value, E>
+    where
+      E: de::Error,
+    {
+      self.visit_string(String::from(v))
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Value, E> {
+      Ok(Value::String(v))
+    }
+
+    fn visit_unit<E>(self) -> Result<Value, E> {
+      Ok(Value::Null)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Value, A::Error>
+    where
+      A: SeqAccess<'de>,
+    {
+      let mut vec = Vec::new();
+      while let Some(elem) = seq.next_element()? {
+        vec.push(elem);
+      }
+      Ok(Value::Array(vec))
+    }
+
+    /// The one method that differs from stock `Value` decoding: a member
+    /// name seen earlier in this same object is refused. `MapAccess`'s
+    /// error type is fixed to `serde_json::Error` by the driving
+    /// `Deserializer`, which has no variant that names an arbitrary
+    /// field, so the key travels out through `self.duplicate` instead —
+    /// [`parse_top_level_value`] reads it back after the `Err` this
+    /// returns propagates up through `deserialize_any`.
+    fn visit_map<A>(self, mut map: A) -> Result<Value, A::Error>
+    where
+      A: MapAccess<'de>,
+    {
+      let mut object = serde_json::Map::new();
+      while let Some(key) = map.next_key::<String>()? {
+        if object.contains_key(&key) {
+          *self.duplicate.borrow_mut() = Some(SmolStr::new(&key));
+          return Err(de::Error::custom("duplicate top-level key"));
+        }
+        let value: Value = map.next_value()?;
+        object.insert(key, value);
+      }
+      Ok(Value::Object(object))
     }
   }
 
@@ -926,6 +1089,109 @@ Rules:
           "expected 'extra' named in {fields:?}"
         ),
         other => panic!("expected UnknownFields naming extra, got {other:?}"),
+      }
+    }
+
+    // ===== duplicate top-level key regressions (Codex R2, PR #5) =====
+    //
+    // Every fixture below is otherwise-complete (all ten declared
+    // properties present and well-shaped, same discipline as
+    // `reject_unknown_json_fields` above) plus exactly one duplicated
+    // top-level key, so the ONLY violation possible is the duplicate
+    // itself, and each assertion pins `JsonParseError::DuplicateField`
+    // rather than any error.
+
+    /// `categories: null` then `categories: [...]` — before this fix,
+    /// last-write-wins collapse silently kept the *valid* second copy,
+    /// so this exact order parsed successfully with no error at all
+    /// (the bug Codex R2 named: `{"categories": null, "categories":
+    /// []}` used to pass).
+    #[test]
+    fn reject_duplicate_categories_null_then_valid() {
+      let json = r#"{"scene":"beach","description":"Sunset over the ocean","subjects":["person"],"objects":["sun"],"actions":["watching"],"emotion":["calm"],"shot_type":"wide shot","lighting":["golden hour"],"tags":["sunset","ocean"],"categories":null,"categories":["nature"]}"#;
+      let task = ImageAnalysisTask::new();
+      let err = task.parse(json).expect_err(
+        "a duplicated top-level key must be rejected regardless of which copy survives collapse",
+      );
+      match err {
+        JsonParseError::DuplicateField(key) => assert_eq!(key, "categories"),
+        other => panic!("expected DuplicateField naming categories, got {other:?}"),
+      }
+    }
+
+    /// The reverse order: `categories: [...]` then `categories: null`.
+    /// Before this fix, collapse kept the *null* second copy, so
+    /// `unusable_fields` already rejected this order (as
+    /// `MissingFields`) — the asymmetry Codex R2 flagged. Both orders
+    /// must now be refused the same way, for the same reason, this
+    /// early: `DuplicateField`, not `MissingFields`.
+    #[test]
+    fn reject_duplicate_categories_valid_then_null() {
+      let json = r#"{"scene":"beach","description":"Sunset over the ocean","subjects":["person"],"objects":["sun"],"actions":["watching"],"emotion":["calm"],"shot_type":"wide shot","lighting":["golden hour"],"tags":["sunset","ocean"],"categories":["nature"],"categories":null}"#;
+      let task = ImageAnalysisTask::new();
+      let err = task.parse(json).expect_err(
+        "a duplicated top-level key must be rejected regardless of which copy survives collapse",
+      );
+      match err {
+        JsonParseError::DuplicateField(key) => assert_eq!(key, "categories"),
+        other => panic!("expected DuplicateField naming categories, got {other:?}"),
+      }
+    }
+
+    /// A wrong-typed duplicate of a required field, wrong-type first:
+    /// `scene: 42` then `scene: "beach"`. Before this fix, collapse
+    /// kept the *valid* second copy, so this order parsed successfully
+    /// with no error — the same silent-bypass shape as the null case
+    /// above, but for a type violation instead of a missing value.
+    #[test]
+    fn reject_duplicate_required_field_wrong_type_then_valid() {
+      let json = r#"{"scene":42,"scene":"beach","description":"Sunset over the ocean","subjects":["person"],"objects":["sun"],"actions":["watching"],"emotion":["calm"],"shot_type":"wide shot","lighting":["golden hour"],"tags":["sunset","ocean"],"categories":["nature"]}"#;
+      let task = ImageAnalysisTask::new();
+      let err = task.parse(json).expect_err(
+        "a duplicated top-level key must be rejected regardless of which copy survives collapse",
+      );
+      match err {
+        JsonParseError::DuplicateField(key) => assert_eq!(key, "scene"),
+        other => panic!("expected DuplicateField naming scene, got {other:?}"),
+      }
+    }
+
+    /// The reverse order: `scene: "beach"` then `scene: 42`. Before
+    /// this fix, collapse kept the *wrong-typed* second copy, so
+    /// `unusable_fields` already rejected this order (as
+    /// `MissingFields`). Both orders must now be refused the same way,
+    /// this early: `DuplicateField`, not `MissingFields`.
+    #[test]
+    fn reject_duplicate_required_field_valid_then_wrong_type() {
+      let json = r#"{"scene":"beach","scene":42,"description":"Sunset over the ocean","subjects":["person"],"objects":["sun"],"actions":["watching"],"emotion":["calm"],"shot_type":"wide shot","lighting":["golden hour"],"tags":["sunset","ocean"],"categories":["nature"]}"#;
+      let task = ImageAnalysisTask::new();
+      let err = task.parse(json).expect_err(
+        "a duplicated top-level key must be rejected regardless of which copy survives collapse",
+      );
+      match err {
+        JsonParseError::DuplicateField(key) => assert_eq!(key, "scene"),
+        other => panic!("expected DuplicateField naming scene, got {other:?}"),
+      }
+    }
+
+    /// A duplicated key OUTSIDE the ten declared properties: before
+    /// this fix, collapse would still have left exactly one `extra`
+    /// key for `unknown_fields` to name (duplicating an unknown key
+    /// doesn't change ITS value being unusable), so this specific
+    /// shape wasn't a silent-pass bug — but it pins that the duplicate
+    /// check runs on every top-level key, declared or not, and fires
+    /// as `DuplicateField` before `unknown_fields` ever sees the
+    /// (already-collapsed-to-one) key.
+    #[test]
+    fn reject_duplicate_unknown_key() {
+      let json = r#"{"scene":"beach","description":"Sunset over the ocean","subjects":["person"],"objects":["sun"],"actions":["watching"],"emotion":["calm"],"shot_type":"wide shot","lighting":["golden hour"],"tags":["sunset","ocean"],"categories":["nature"],"extra":"foo","extra":"bar"}"#;
+      let task = ImageAnalysisTask::new();
+      let err = task
+        .parse(json)
+        .expect_err("a duplicated top-level key must be rejected even when the name is outside the declared schema");
+      match err {
+        JsonParseError::DuplicateField(key) => assert_eq!(key, "extra"),
+        other => panic!("expected DuplicateField naming extra, got {other:?}"),
       }
     }
 
