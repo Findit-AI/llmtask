@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-31
+
+### Added
+- `ImageAnalysisTask` (`llmtask::image_analysis::ImageAnalysisTask`), behind
+  the existing `json` feature: the canonical `Task` implementation for
+  `ImageAnalysis` — prompt, JSON Schema, and a resilient parser — merged up
+  from the two byte-for-byte-equivalent engine copies (`lfm/src/image_analysis.rs`
+  and `qwen3-vl/src/image_analysis.rs`, both still pinned to `llmtask = "0.1"`
+  and its pre-rename nine-field `ImageAnalysis`). Every engine now runs the
+  same task instead of maintaining parallel copies; retiring the two
+  downstream copies is each engine's own follow-up.
+- Sealed label-prompt discipline: `IMAGE_ANALYSIS_PROMPT` now instructs, for
+  every array field, lowercase/singular/1-3-word phrases with no trailing
+  punctuation (previously the per-field word-count guidance varied field to
+  field). The parser never lowercases at parse time — the discipline is
+  prompt-only, pinned by `label_array_discipline_is_stated_in_prompt` and
+  `parse_does_not_lowercase_labels`.
+- `categories` joins the JSON Schema's `properties` as a **required** field
+  (see `REQUIRED_FIELDS`), matching the other nine (`tags` included) — the
+  newly-added `ImageAnalysis` field with no prior engine producing it.
+
+### Changed
+- `JsonParseError::MissingFields` now also names a listed field that's
+  present with a JSON type its schema entry can't satisfy (e.g. a number
+  where a string or array of strings is expected) — previously only
+  absent/null required fields were named, and a wrong-type field fell
+  through to a generic, unnamed `serde` error.
+- `ImageAnalysisTask::parse` now fully enforces the schema it declares
+  instead of only partially checking it: an object key outside the ten
+  declared `properties` is rejected as a new `JsonParseError::UnknownFields`
+  (the runtime counterpart of the schema's `additionalProperties: false`,
+  which nothing previously checked against already-decoded JSON), and
+  `categories` — now a required field, see above — is held to the exact
+  same absent/null/wrong-type checks as the other nine, closing a gap where
+  a present `categories: null` used to silently default to an empty list
+  instead of being rejected.
+- `ImageAnalysisTask::parse` now refuses a top-level JSON object that
+  declares the same member name more than once, instead of silently
+  keeping only the last copy. `serde_json`'s stock `Value` decode
+  collapses a duplicate object member via last-write-wins `Map::insert`
+  before any schema validation runs, so e.g. `{"categories": null,
+  "categories": []}` used to parse successfully (the valid second copy
+  quietly won), while the reverse key order was rejected — the same
+  order-dependent bypass covered a wrong-typed duplicate of any required
+  field, and a duplicated key could never be named by
+  `JsonParseError::UnknownFields` once collapsed. The top-level object is
+  now decoded through a duplicate-checking parse that refuses the first
+  repeated member name it sees, before a `Value` is ever built, surfaced
+  as a new `JsonParseError::DuplicateField` naming the key.
+
 ## [0.2.0] - 2026-08-31
 
 ### Added

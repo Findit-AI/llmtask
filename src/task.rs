@@ -130,6 +130,8 @@ mod json {
   // `extern crate alloc as std` alias in lib.rs).
   use std::vec::Vec;
 
+  use smol_str::SmolStr;
+
   /// Convenience parse-error type for [`crate::Task`]
   /// implementations whose model output is JSON. Available behind
   /// the `json` feature.
@@ -143,12 +145,42 @@ mod json {
     /// `serde_json` failed to parse the response as valid JSON.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    /// JSON parsed but one or more required schema fields are absent or
-    /// present as JSON `null`. Both cases are treated as missing because
-    /// the schema requires every listed field to carry a string or array
-    /// value, never null.
-    #[error("schema violation: required fields missing or null: {0:?}")]
+    /// The top-level JSON object declared the same member name more than
+    /// once (e.g. `{"categories": null, "categories": []}`). A stock
+    /// `serde_json::Value` decode collapses a duplicate object member
+    /// silently — later overwrites earlier via `Map::insert` — before any
+    /// of this crate's validation runs, so a well-typed copy of a field
+    /// can mask an earlier null/wrong-typed copy (or the reverse,
+    /// depending only on which copy comes last in the text), and a
+    /// duplicate of a name [`Self::UnknownFields`] would otherwise catch
+    /// can no longer be seen once collapsed to one entry. Tasks that
+    /// decode their top-level object through a duplicate-checking parse
+    /// (e.g. `image_analysis::ImageAnalysisTask::parse`) return this
+    /// instead, naming the repeated key, before a `Value` is ever built.
+    #[error("schema violation: top-level key appears more than once: {0:?}")]
+    DuplicateField(SmolStr),
+    /// JSON parsed but one or more schema fields are unusable: a required
+    /// field absent or present as JSON `null`, or any listed field (required
+    /// or optional) present with a JSON type its schema entry can't satisfy
+    /// (e.g. a number where a string or array of strings is expected). All
+    /// three cases are folded into one variant because the schema requires
+    /// every listed field to carry a string or array-of-strings value —
+    /// never null, and never a type the field's shape can't hold — so a
+    /// decoder that violates any of them has drifted the same way from the
+    /// caller's perspective: the field's value can't be used.
+    #[error("schema violation: required fields missing, null, or invalid: {0:?}")]
     MissingFields(Vec<&'static str>),
+    /// JSON parsed as an object, but it carries one or more keys outside
+    /// the Task's declared `properties` — the runtime counterpart of the
+    /// schema's `additionalProperties: false`. Distinct from
+    /// [`Self::MissingFields`]: that variant names DECLARED fields whose
+    /// *value* is absent, null, or wrong-typed, using `&'static str`
+    /// because the declared field names are known at compile time. An
+    /// unknown key is, by definition, not one of those names — it's
+    /// arbitrary decoder output — so it can't borrow a `'static` name and
+    /// is carried as an owned [`SmolStr`] instead.
+    #[error("schema violation: object has fields outside the declared schema: {0:?}")]
+    UnknownFields(Vec<SmolStr>),
     /// JSON parsed and had no missing fields, but every value was empty.
     #[error("structured response had no usable fields")]
     NoUsableFields,
